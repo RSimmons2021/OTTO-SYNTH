@@ -1,0 +1,197 @@
+language: generic
+dist: bionic
+
+env:
+  global:
+    # For pushing documentation
+    - ENCRYPTION_LABEL: "388c738922bf"
+    - COMMIT_AUTHOR_EMAIL: "topisani@hamsterpoison.com"
+
+cache:
+  directories:
+    - ${TRAVIS_BUILD_DIR}/deps
+
+matrix:
+  include:
+    - name: "Linux, Clang 10, Debug, libc++"
+      os: linux
+      addons:
+        apt:
+          sources:
+            - sourceline: "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-10 main"
+              key_url: "https://apt.llvm.org/llvm-snapshot.gpg.key"
+            - sourceline: "ppa:ubuntu-toolchain-r/test"
+          packages:
+            - clang-10
+            - gdb-minimal
+            - libasound-dev
+      env:
+        - CC=clang-10 CXX=clang++-10
+        - BUILD_TYPE=Debug
+        - USE_LIBCXX=1
+        - DEPLOY_DOCS=OFF
+
+    - name: "Linux, Clang 10, Release, libstdc++ (GCC 10)"
+      os: linux
+      addons:
+        apt:
+          sources:
+            - sourceline: "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-10 main"
+              key_url: "https://apt.llvm.org/llvm-snapshot.gpg.key"
+            - sourceline: "ppa:ubuntu-toolchain-r/test"
+          packages:
+            - clang-10
+            - libstdc++-10-dev
+            - gdb-minimal
+            - libasound-dev
+      env:
+        - CC=clang-10 CXX=clang++-10
+        - BUILD_TYPE=Release
+        - USE_LIBCXX=0
+        - DEPLOY_DOCS=OFF
+
+    - name: "Linux, GCC 10, Debug"
+      os: linux
+      addons:
+        apt:
+          sources:
+            - sourceline: "ppa:ubuntu-toolchain-r/test"
+          packages:
+            - g++-10
+            - gdb-minimal
+            - libasound-dev
+      env:
+        - CC=gcc-10 CXX=g++-10
+        - BUILD_TYPE=Debug
+        - USE_LIBCXX=0
+        - DEPLOY_DOCS=OFF
+    #    - name: "OSX, Clang, Debug, libc++"
+    #      os: osx
+    #      osx_image: xcode9.1
+    #      env:
+    #        - CC=clang CXX=clang++
+    #        - MATRIX_EVAL="brew update; brew install gdb llvm"
+    #        - LDFLAGS="-L/usr/local/opt/llvm/lib -Wl,-rpath,/usr/local/opt/llvm/lib"
+    #        - PATH="/usr/local/opt/llvm/bin:$PATH"
+    #        - CXXFLAGS="-I/usr/local/opt/llvm/include -I/usr/local/opt/llvm/include/c++/v1/"
+    #        - USE_LIBCXX=1
+    #        - DEPLOY_DOCS=OFF
+
+    - name: "Deploy Docs"
+      os: linux
+      branches:
+        only:
+          - develop
+      addons:
+        apt:
+          sources:
+            - sourceline: "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-10 main"
+              key_url: "https://apt.llvm.org/llvm-snapshot.gpg.key"
+            - sourceline: "ppa:ubuntu-toolchain-r/test"
+          packages:
+            - clang-10
+            - libclang-10-dev
+            - libasound-dev
+            - libtinfo-dev
+      env:
+        - CC=clang-10 CXX=clang++-10
+        - BUILD_TYPE=Debug
+        - USE_LIBCXX=1
+        - DEPLOY_DOCS=ON
+
+  allow_failures:
+    - name: "Deploy Docs"
+    - name: "Linux, Clang 10, Release, libstdc++ (GCC 10)"
+    - os: osx
+
+  fast_finish: true
+
+before_install:
+  - eval $MATRIX_EVAL
+
+install:
+  - $CXX --version
+
+  # Dependencies required by the CI are installed in ${TRAVIS_BUILD_DIR}/deps/
+  - DEPS_DIR="${TRAVIS_BUILD_DIR}/deps"
+  - mkdir -p "${DEPS_DIR}"
+  - cd "${DEPS_DIR}"
+
+  # Travis machines have 2 cores
+  - JOBS=2
+
+  # Install cmake
+  - CMAKE_VERSION=3.14.0
+  - |
+    if [[ "${TRAVIS_OS_NAME}" == "linux" ]]; then
+      CMAKE_URL="https://cmake.org/files/v${CMAKE_VERSION%.[0-9]}/cmake-${CMAKE_VERSION}-Linux-x86_64.tar.gz"
+      if ! $DEPS_DIR/cmake/bin/cmake --version | grep $CMAKE_VERSION; then
+        echo "Installing cmake $CMAKE_VERSION"
+        rm -rf cmake
+        mkdir cmake
+        travis_retry wget --no-check-certificate -O - ${CMAKE_URL} | tar --strip-components=1 -xz -C cmake
+      else
+        echo "Using cached cmake"
+      fi
+      export PATH=${DEPS_DIR}/cmake/bin:${PATH}
+    else
+      brew install cmake || brew upgrade cmake
+    fi
+
+  - cmake --version
+
+  # [linux]: Install the right version of libc++
+  - |
+    LLVM_INSTALL=${DEPS_DIR}/llvm/install
+    # if in linux and compiler clang and llvm not installed
+    if [[ "${TRAVIS_OS_NAME}" == "linux" && "$USE_LIBCXX" == "1" && ! -d $LLVM_INSTALL ]]; then
+    [[ "${CXX}" == "clang++-10" ]] && LLVM_VERSION="10.0.0";
+    LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/llvm-${LLVM_VERSION}.src.tar.xz"
+    LIBCXX_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/libcxx-${LLVM_VERSION}.src.tar.xz"
+    LIBCXXABI_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/libcxxabi-${LLVM_VERSION}.src.tar.xz"
+    mkdir -p llvm llvm/build llvm/projects/libcxx llvm/projects/libcxxabi
+    travis_retry wget -O - ${LLVM_URL} | tar --strip-components=1 -xJ -C llvm
+    travis_retry wget -O - ${LIBCXX_URL} | tar --strip-components=1 -xJ -C llvm/projects/libcxx
+    travis_retry wget -O - ${LIBCXXABI_URL} | tar --strip-components=1 -xJ -C llvm/projects/libcxxabi
+    (cd llvm/build && cmake .. -DCMAKE_INSTALL_PREFIX=${LLVM_INSTALL})
+    (cd llvm/build/projects/libcxx && make install -j2)
+    (cd llvm/build/projects/libcxxabi && make install -j2)
+    fi
+  - |
+    if [[ "${TRAVIS_OS_NAME}" == "linux" && "$USE_LIBCXX" == "1" ]]; then
+    export CXXFLAGS="-isystem ${LLVM_INSTALL}/include/c++/v1"
+    export LDFLAGS="-L ${LLVM_INSTALL}/lib -l c++ -l c++abi"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${LLVM_INSTALL}/lib"
+    echo "Testing libc++: "
+    echo "int main() { return 0; }" | $CXX -x c++ -stdlib=libc++ -L $LLVM_INSTALL/lib -
+    fi
+  - |
+    if [[ "$DEPLOY_DOCS" == "ON" ]]; then
+    if [[ ! -d doxygen ]]; then
+    git clone https://github.com/doxygen/doxygen.git
+    (cd doxygen; cmake .; make -j2)
+    fi
+    export PATH="${DEPS_DIR}/doxygen/bin:$PATH"
+    fi
+
+before_script:
+  - cd "${TRAVIS_BUILD_DIR}"
+  - mkdir build && cd build
+  - export CXXFLAGS="$CXXFLAGS -Werror"
+  - cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DOTTO_USE_LIBCXX=$USE_LIBCXX -DOTTO_BUILD_DOCS=$DEPLOY_DOCS -DOTTO_BOARD=dummy $CMAKE_OPTIONS
+
+script:
+  - cd "${TRAVIS_BUILD_DIR}"
+  - |
+    if [[ "$DEPLOY_DOCS" == "ON" ]]; then
+    scripts/deploy-docs
+    else
+    (cmake --build build -- -j${JOBS} && build/bin/test) || RESULT=$?
+    if [[ -n "$RESULT" ]]; then
+    echo "Tests failed, running in GDB for stacktrace"
+    gdb -return-child-result -batch -ex "run" -ex "thread apply all bt" -ex "quit" --args build/bin/test
+    fi
+    fi
+
+notifications:
+  email: false
